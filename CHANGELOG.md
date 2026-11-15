@@ -6,7 +6,7 @@
 
 * **edit:** run a command right after the mutation in one observation. `then_run: { command, timeout? }` executes pi's bash only after the edit commits: a refused mutation reports `[then_run:skipped]` and spawns nothing, a failed command reports `[then_run:failed]` and the mutation stays applied. No second tool call, so the command reads the bytes the diff just served.
 
-* **edit:** re-assert ownership of the `edit` name at `before_agent_start`. pi's registry is last-write-wins, so another extension claiming `edit` from its own handler left the model holding a schema that cannot accept the HASH anchors `read` had just served. Ours is re-registered when the active owner lacks `anchor_from`, and the swap is reported once per session.
+* **edit:** report an `edit` ownership collision once per session. pi resolves a name by the FIRST extension that registered it, so a package listed before us owns `edit` for the whole session and no later re-registration displaces it: the model would hold an exact-text schema while `read` serves HASH anchors. The notice names the owner and the remedy — list pi-better-edit before it in `settings.packages`.
 
 ## [2.18.0] - 2026-11-07
 

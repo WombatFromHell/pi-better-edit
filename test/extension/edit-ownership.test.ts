@@ -7,7 +7,7 @@ import {
   clearDiagnostics,
   extractHash,
   getText,
-  makeFakePiRegistry,
+  makeFakePiRunner,
   readDiagnostics,
   testSessionManager,
   withTempFile,
@@ -15,8 +15,8 @@ import {
 
 /**
  * A decoy owner for `edit`, registered from its own `session_start` handler — the shape SoL-Pi's
- * action-fusion uses. pi's registry is a last-write-wins `Map` with no shadow warning, so this
- * decoy owns the name and our hash-anchor definition is displaced while `read` still serves anchors.
+ * action-fusion uses. pi keeps the FIRST extension that registered a name, so loading this decoy
+ * before pi-better-edit owns `edit` for the whole session and nothing we register later displaces it.
  */
 function registerDecoyEdit(pi: any): void {
   pi.on("session_start", () => {
@@ -39,33 +39,83 @@ function ctxFor(cwd: string) {
   return { cwd, ui: { notify() {} }, sessionManager: testSessionManager } as any;
 }
 
-describe("edit ownership — reclaim from before_agent_start", () => {
-  it("reclaims the name when another extension claims edit at session_start", async () => {
+const ownershipWarnings = () => readDiagnostics().filter((r) => r.scope === "tool-ownership");
+
+describe("edit ownership — pi keeps the first-loaded owner", () => {
+  it("reports the collision when another extension claims edit first", async () => {
     await withTempFile("sample.txt", "alpha\nbravo\ncharlie\n", async ({ cwd, path }) => {
       clearDiagnostics();
-      const { pi, getTool } = makeFakePiRegistry();
-      registerDecoyEdit(pi);
-      register(pi);
+      const runner = makeFakePiRunner();
+      registerDecoyEdit(runner.load("decoy-extension"));
+      register(runner.load("pi-better-edit"));
       const ctx = ctxFor(cwd);
 
-      // The collision as it stands today: the later `session_start` registration wins the name.
-      pi.startSession(ctx);
-      const claimed = getTool("edit").parameters.properties.edits.items.properties;
-      expect(claimed["oldText"]).toBeDefined();
-      expect(claimed["anchor_from"]).toBeUndefined();
+      runner.startSession(ctx);
+      runner.runTurn(ctx);
 
-      pi.runTurn(ctx);
+      // The collision as pi resolves it: the decoy stays the active owner, our anchors are unusable.
+      const owner = runner.getTool("edit");
+      expect(owner.parameters.properties.edits.items.properties["oldText"]).toBeDefined();
+      expect(owner.parameters.properties.edits.items.properties["anchor_from"]).toBeUndefined();
 
-      const owned = getTool("edit");
-      expect(owned.parameters.properties.edits.items.properties["anchor_from"]).toBeDefined();
+      const warnings = ownershipWarnings();
+      expect(warnings.length).toBe(1);
+      expect(warnings[0].level).toBe("warn");
+      expect(warnings[0].message).toContain("decoy-extension");
+      expect(warnings[0].message).toContain("settings.packages");
+
+      // Our `read` still serves anchors, which is exactly why the notice must name the remedy.
+      const rows = anchorRows(
+        getText(
+          await runner
+            .getTool("read")
+            .execute("r1", { file: "sample.txt" }, undefined, undefined, ctx),
+        ),
+      );
+      expect(rows.some((row: string) => row.includes("│bravo"))).toBe(true);
+      expect(await readFile(path, "utf-8")).toBe("alpha\nbravo\ncharlie\n");
+    });
+  });
+
+  it("reports the collision once per session, not once per run", async () => {
+    await withTempFile("sample.txt", "alpha\nbravo\ncharlie\n", async ({ cwd }) => {
+      clearDiagnostics();
+      const runner = makeFakePiRunner();
+      registerDecoyEdit(runner.load("decoy-extension"));
+      register(runner.load("pi-better-edit"));
+      const ctx = ctxFor(cwd);
+      runner.startSession(ctx);
+      runner.runTurn(ctx);
+      runner.runTurn(ctx);
+      runner.runTurn(ctx);
+      expect(ownershipWarnings().length).toBe(1);
+    });
+  });
+
+  it("edits with anchors when pi-better-edit loads first", async () => {
+    await withTempFile("sample.txt", "alpha\nbravo\ncharlie\n", async ({ cwd, path }) => {
+      clearDiagnostics();
+      const runner = makeFakePiRunner();
+      register(runner.load("pi-better-edit"));
+      registerDecoyEdit(runner.load("decoy-extension"));
+      const ctx = ctxFor(cwd);
+
+      runner.startSession(ctx);
+      runner.runTurn(ctx);
+
+      const owner = runner.getTool("edit");
+      expect(owner.parameters.properties.edits.items.properties["anchor_from"]).toBeDefined();
+      expect(ownershipWarnings()).toHaveLength(0);
 
       const rows = anchorRows(
         getText(
-          await getTool("read").execute("r1", { file: "sample.txt" }, undefined, undefined, ctx),
+          await runner
+            .getTool("read")
+            .execute("r1", { file: "sample.txt" }, undefined, undefined, ctx),
         ),
       );
       const anchor = extractHash(rows.find((row: string) => row.includes("│bravo"))!);
-      const result = await owned.execute(
+      const result = await owner.execute(
         "e1",
         { file: "sample.txt", edits: [{ anchor_from: anchor, anchor_to: anchor, text: "BRAVO" }] },
         undefined,
@@ -75,41 +125,22 @@ describe("edit ownership — reclaim from before_agent_start", () => {
 
       expect(getText(result)).toContain("Successfully edited");
       expect(await readFile(path, "utf-8")).toBe("alpha\nBRAVO\ncharlie\n");
-
-      const warnings = readDiagnostics().filter((r) => r.scope === "tool-ownership");
-      expect(warnings.length).toBe(1);
-      expect(warnings[0].level).toBe("warn");
     });
   });
 
-  it("reports the reclaim once per session, not once per run", async () => {
+  it("leaves the registration alone when nothing else claims edit", async () => {
     await withTempFile("sample.txt", "alpha\nbravo\ncharlie\n", async ({ cwd }) => {
       clearDiagnostics();
-      const { pi } = makeFakePiRegistry();
-      registerDecoyEdit(pi);
-      register(pi);
+      const runner = makeFakePiRunner();
+      register(runner.load("pi-better-edit"));
       const ctx = ctxFor(cwd);
-      pi.startSession(ctx);
-      pi.runTurn(ctx);
-      pi.runTurn(ctx);
-      pi.runTurn(ctx);
-      expect(readDiagnostics().filter((r) => r.scope === "tool-ownership").length).toBe(1);
-    });
-  });
-
-  it("leaves the registration alone when we already own edit", async () => {
-    await withTempFile("sample.txt", "alpha\nbravo\ncharlie\n", async ({ cwd }) => {
-      clearDiagnostics();
-      const { pi, getTool } = makeFakePiRegistry();
-      register(pi);
-      const ctx = ctxFor(cwd);
-      pi.startSession(ctx);
-      pi.runTurn(ctx);
+      runner.startSession(ctx);
+      runner.runTurn(ctx);
 
       expect(
-        getTool("edit").parameters.properties.edits.items.properties["anchor_from"],
+        runner.getTool("edit").parameters.properties.edits.items.properties["anchor_from"],
       ).toBeDefined();
-      expect(readDiagnostics().filter((r) => r.scope === "tool-ownership")).toHaveLength(0);
+      expect(ownershipWarnings()).toHaveLength(0);
     });
   });
 });

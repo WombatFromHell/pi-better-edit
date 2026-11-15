@@ -34,6 +34,11 @@ export type EditDetails = {
    * WHY: anchored diff. `diff` stays the bare collapsed projection for TUI presentation clients.
    */
   summary?: string;
+  /**
+   * WHY: the fused `then_run` tail. The `tool_result` hook recomposes the model-visible text from
+   * WHY: `details` (see finalizeResult), so a tail carried only in `content` is dropped in pi.
+   */
+  thenRunTail?: string;
 };
 type TResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -128,6 +133,7 @@ export interface FinalizeInput {
   summary?: string;
   warnings?: string[];
   driftNotice?: string;
+  thenRunTail?: string;
 }
 
 /**
@@ -144,9 +150,10 @@ function modelText(summary: string, diff: string, warnings: string[] | undefined
  * synthesized payload without one keeps the bare diff + warnings text, unchanged.
  */
 export function finalizeResult(input: FinalizeInput): string {
-  const body = input.diff + warnBlock(input.warnings);
+  const tail = tailBlock(input.thenRunTail);
+  const body = input.diff + warnBlock(input.warnings) + tail;
   if (input.summary === undefined || input.summary === "" || input.diff === "") return body;
-  return modelText(input.summary, input.diff, input.warnings);
+  return modelText(input.summary, input.diff, input.warnings) + tail;
 }
 
 export function finalizeToolResult(details: EditDetails): {
@@ -158,6 +165,7 @@ export function finalizeToolResult(details: EditDetails): {
     ...(details.summary !== undefined ? { summary: details.summary } : {}),
     ...(details.warnings !== undefined ? { warnings: details.warnings } : {}),
     ...(details.driftNotice !== undefined ? { driftNotice: details.driftNotice } : {}),
+    ...(details.thenRunTail !== undefined ? { thenRunTail: details.thenRunTail } : {}),
   });
   return {
     content: [{ type: "text", text }],
@@ -167,6 +175,11 @@ export function finalizeToolResult(details: EditDetails): {
 
 function warnBlock(warnings: string[] | undefined): string {
   return warnings?.length ? `\n\n${warnings.join("\n")}` : "";
+}
+
+/** The fused command's report, after the warnings block, once. */
+function tailBlock(tail: string | undefined): string {
+  return tail === undefined || tail === "" ? "" : `\n\n${tail}`;
 }
 
 export function buildNoop(input: NoopInput): TResult {

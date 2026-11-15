@@ -208,39 +208,43 @@ export const testSessionManager = {
   getSessionFile: () => undefined,
 };
 
+/** pi validates the `prepareArguments` result against the registered schema before `execute` runs. */
+function withArgumentValidation(tool: any): any {
+  const originalExecute = tool.execute;
+  const validator = Compile(tool.parameters);
+  tool.execute = async function (
+    toolCallId: string,
+    params: unknown,
+    signal: AbortSignal | undefined,
+    onUpdate: unknown,
+    ctx: unknown,
+  ) {
+    const prepared = tool.prepareArguments ? tool.prepareArguments(params) : params;
+    if (!validator.Check(prepared)) {
+      const errors = [...validator.Errors(prepared)].map((e: any) => `  - ${e.message}`).join("\n");
+      const msg =
+        '[E_BAD_PAYLOAD] Schema validation failed for tool "' +
+        tool.name +
+        '" after prepareArguments. The prepareArguments return value does not match the registered schema.\n' +
+        errors;
+      throw new Error(msg);
+    }
+    return originalExecute.call(this, toolCallId, prepared, signal, onUpdate, ctx);
+  };
+  return tool;
+}
+
 export function makeFakePiRegistry() {
   const tools = new Map<string, any>();
   const sessionStartHandlers: Array<(event: unknown, ctx: unknown) => unknown> = [];
   // WHY: pi emits `before_agent_start` inside `_prepareRun()` BEFORE it applies the tool loadout, so a
-  // WHY: `registerTool` from this handler owns the name for the run. The ownership tests need that seam.
+  // WHY: handler there reads the loadout as it stood after every `session_start` registration. The
+  // WHY: ownership tests need that seam; see makeFakePiRunner for the multi-extension rule.
   const beforeAgentStartHandlers: Array<(event: unknown, ctx: unknown) => unknown> = [];
   return {
     pi: {
       registerTool(tool: any) {
-        const originalExecute = tool.execute;
-        const validator = Compile(tool.parameters);
-        tool.execute = async function (
-          toolCallId: string,
-          params: unknown,
-          signal: AbortSignal | undefined,
-          onUpdate: unknown,
-          ctx: unknown,
-        ) {
-          const prepared = tool.prepareArguments ? tool.prepareArguments(params) : params;
-          if (!validator.Check(prepared)) {
-            const errors = [...validator.Errors(prepared)]
-              .map((e: any) => `  - ${e.message}`)
-              .join("\n");
-            const msg =
-              '[E_BAD_PAYLOAD] Schema validation failed for tool "' +
-              tool.name +
-              '" after prepareArguments. The prepareArguments return value does not match the registered schema.\n' +
-              errors;
-            throw new Error(msg);
-          }
-          return originalExecute.call(this, toolCallId, prepared, signal, onUpdate, ctx);
-        };
-        tools.set(tool.name, tool);
+        tools.set(tool.name, withArgumentValidation(tool));
       },
       registerCommand() {},
       on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
@@ -281,6 +285,85 @@ export function makeFakePiRegistry() {
     } as any,
     getTool(name: string) {
       const tool = tools.get(name);
+      if (!tool) throw new Error(`Tool not registered: ${name}`);
+      return tool;
+    },
+  };
+}
+
+/**
+ * Multi-extension runner with pi's real resolution rule: `runner.getAllRegisteredTools()` keeps the
+ * FIRST tool per name while walking extensions in load order, so the extension that loads first owns
+ * the name for the whole session — registering later cannot displace it.
+ */
+export function makeFakePiRunner() {
+  type Handlers = Map<string, Array<(event: unknown, ctx: unknown) => unknown>>;
+  const extensions: Array<{ source: string; tools: Map<string, any>; handlers: Handlers }> = [];
+  const ownerOf = (name: string) => extensions.find((ext) => ext.tools.has(name));
+  const emit = (type: string, ctx: unknown) => {
+    for (const ext of extensions) {
+      for (const handler of ext.handlers.get(type) ?? []) {
+        void handler(
+          {
+            type,
+            reason: "startup",
+            messageType: "user",
+            systemPrompt: "",
+            systemPromptOptions: {},
+          },
+          ctx,
+        );
+      }
+    }
+  };
+  return {
+    /** Load one extension, in order: the first to claim a name owns it. */
+    load(source: string) {
+      const ext: { source: string; tools: Map<string, any>; handlers: Handlers } = {
+        source,
+        tools: new Map(),
+        handlers: new Map(),
+      };
+      extensions.push(ext);
+      return {
+        registerTool(tool: any) {
+          ext.tools.set(
+            tool.name,
+            Object.assign(withArgumentValidation(tool), { sourceInfo: { path: source } }),
+          );
+        },
+        registerCommand() {},
+        on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+          ext.handlers.set(event, [...(ext.handlers.get(event) ?? []), handler]);
+        },
+        getAllTools() {
+          const byName = new Map<string, any>();
+          for (const loaded of extensions) {
+            for (const tool of loaded.tools.values()) {
+              if (!byName.has(tool.name)) byName.set(tool.name, tool);
+            }
+          }
+          return [...byName.values()].map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.parameters,
+            promptGuidelines: tool.promptGuidelines,
+            sourceInfo: tool.sourceInfo,
+          }));
+        },
+        getActiveTools() {
+          return [...new Set(extensions.flatMap((loaded) => [...loaded.tools.keys()]))];
+        },
+      } as any;
+    },
+    startSession(ctx: unknown) {
+      emit("session_start", ctx);
+    },
+    runTurn(ctx: unknown) {
+      emit("before_agent_start", ctx);
+    },
+    getTool(name: string) {
+      const tool = ownerOf(name)?.tools.get(name);
       if (!tool) throw new Error(`Tool not registered: ${name}`);
       return tool;
     },

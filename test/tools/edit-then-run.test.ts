@@ -9,6 +9,7 @@ import {
   setupIntegrationTest,
   withTempFile,
 } from "../support/fixtures";
+import { finalizeToolResult } from "../../src/edit-response.js";
 
 /** Anchor of the line containing `needle`, taken from a fresh serve — the same lease a model uses. */
 async function anchorOf(readTool: any, ctx: any, file: string, needle: string): Promise<string> {
@@ -55,10 +56,13 @@ describe("edit — then_run fusion", () => {
         ctx,
       );
 
-      const text = getText(result);
-      expect(text).toContain("Successfully edited");
-      expect(text).toContain("[then_run:succeeded]");
-      expect(text).toContain("1");
+      // WHY: the `tool_result` hook recomposes the model-visible text from `details`, so the tail must
+      // WHY: live in `details` — text appended to `content` here would be silently dropped in pi.
+      const composed = finalizeToolResult(result.details as any);
+      expect(composed.content[0].text).toContain("Successfully edited");
+      expect(composed.content[0].text).toContain("[then_run:succeeded]");
+      expect(composed.content[0].text).toContain("1");
+      expect(getText(result)).not.toContain("[then_run");
       expect(await readFile(path, "utf-8")).toBe("alpha\nBRAVO\ncharlie\n");
     });
   });

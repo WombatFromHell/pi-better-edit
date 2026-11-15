@@ -94,16 +94,19 @@ export async function mutateThenRun(options: FusedMutationOptions): Promise<Text
     throw new Error(`${textOf(mutation)}\n\n${THEN_RUN_FAILED} ${errorText(error)}`);
   }
   const output = textOf(command);
+  const tail = output.length > 0 ? `${THEN_RUN_SUCCEEDED}\n${output}` : THEN_RUN_SUCCEEDED;
   if (command.isError === true) {
+    // WHY: an errored result is not recomposed by the hook, so the tail rides in `content` here.
     return append(
       mutation,
       output.length > 0 ? `${THEN_RUN_FAILED}\n${output}` : THEN_RUN_FAILED,
       true,
     );
   }
-  return append(
-    mutation,
-    output.length > 0 ? `${THEN_RUN_SUCCEEDED}\n${output}` : THEN_RUN_SUCCEEDED,
-    false,
-  );
+  // WHY: a successful result IS recomposed by the `tool_result` hook from `details`, so the tail goes
+  // WHY: there (see EditDetails.thenRunTail), never into `content` — that text would be dropped.
+  return {
+    ...mutation,
+    details: { ...(mutation.details as object), thenRunTail: tail },
+  };
 }

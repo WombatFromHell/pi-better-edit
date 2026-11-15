@@ -141,30 +141,27 @@ export function regEdit(pi: ExtensionAPI): void {
   // WHY: instead of verifying anchors against a session that never served them.
   let sessionManager: { getSessionId(): string } | undefined;
   // WHY: a foreign owner that re-claims the name every run would repeat the notice every run; one
-  // WHY: per session is enough to explain the swap, and `session_start` re-arms it on reload/switch.
+  // WHY: per session is enough to explain the collision, and `session_start` re-arms it on reload/switch.
   let ownershipReported = false;
   pi.on("session_start", (_event, ctx) => {
     sessionManager = ctx.sessionManager;
     ownershipReported = false;
   });
   pi.registerTool(buildToolDef(() => sessionManager));
-  // WHY: pi's tool registry is a last-write-wins `Map` with no shadow warning, so a plugin that claims
-  // WHY: `edit` from its own handler displaces this definition while `read` keeps serving HASH anchors —
-  // WHY: the model then holds a schema that cannot accept the anchors it was just handed. Re-assert ours
-  // WHY: at `before_agent_start`: it runs after every `session_start` registration, before the loadout.
-  // WHY: a later-loaded extension claiming `edit` from its OWN `before_agent_start` handler still wins
-  // WHY: this session — the ceiling. Upgrade: re-assert at `turn_start`, or on a post-loadout pi hook.
+  // WHY: pi resolves a tool name by the FIRST extension that registered it (runner.getAllRegisteredTools
+  // WHY: keeps the first entry per name while walking extensions in load order). A package listed before
+  // WHY: us therefore owns `edit` for the whole session, and re-registering from a later handler cannot
+  // WHY: displace it: the model holds an exact-text schema while read serves HASH anchors. Ceiling: we
+  // WHY: can only report the collision; a real fix needs pi to expose ownership or load order.
   pi.on("before_agent_start", () => {
     const owner = pi.getAllTools().find((tool) => tool.name === "edit");
     if (owner === undefined || declaresHashAnchors(owner)) return;
-    pi.registerTool(buildToolDef(() => sessionManager));
-    if (!ownershipReported) {
-      ownershipReported = true;
-      reportWarning(
-        "tool-ownership",
-        `another extension owns \`edit\` (${owner.sourceInfo?.path ?? "unknown source"}); re-registered the hash-anchor definition`,
-      );
-    }
+    if (ownershipReported) return;
+    ownershipReported = true;
+    reportWarning(
+      "tool-ownership",
+      `another extension owns edit (${owner.sourceInfo?.path ?? "unknown source"}); pi keeps the first-loaded owner, so list pi-better-edit before it in settings.packages`,
+    );
   });
 }
 
