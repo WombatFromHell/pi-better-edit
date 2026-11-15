@@ -27,7 +27,8 @@ import { createTuiPresenter } from "./tui-presenter.js";
 import { loadP, loadGuide } from "./prompts.js";
 import type { EditDetails } from "./edit-response.js";
 import type { RPreview, RRState } from "./edit-render.js";
-
+import { reportWarning } from "./diagnostics.js";
+import { mutateThenRun, type ThenRunInput } from "./then-run.js";
 void EDIT_DESCRIPTION;
 /** SAFETY: @deprecated Import from "./payload-contract.js" — single source per ADR-0007 */
 export { assertReq };
@@ -97,19 +98,29 @@ export function buildToolDef(
     renderShell: "default",
     // SAFETY: presenter owns TUI casts — asToolDef returns ToolDefinition-typed renders, edit.ts has zero direct TUI casts
     ...presenter.asToolDef(),
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(toolCallId, params, signal, _onUpdate, ctx) {
       // SAFETY: pi execute boundary is untyped — ctx narrowed via sessionKeyFor, signal is AbortSignal validated by engine
+      const record = params as Record<string, unknown>;
+      // WHY: `then_run` belongs to the fusion, not the engine: the normalized record keeps the canonical key set.
+      const { then_run: thenRun, ...mutation } = record;
       try {
-        const res = await tool.execute(
-          params,
-          signal as AbortSignal | undefined,
-          // SAFETY: ctx is untyped at the pi boundary — cast validated by pi's runtime shape
-          ctx as unknown as {
-            cwd: string;
-            sessionManager?: { getSessionId(): string };
-          },
-        );
-        // SAFETY: res is validated tool result after tool.execute — cast to pi ToolDef return type for registration
+        const res = await mutateThenRun({
+          toolCallId,
+          thenRun: thenRun as ThenRunInput | undefined,
+          mutate: () =>
+            tool.execute(
+              mutation,
+              signal as AbortSignal | undefined,
+              // SAFETY: ctx is untyped at the pi boundary — cast validated by pi's runtime shape
+              ctx as unknown as {
+                cwd: string;
+                sessionManager?: { getSessionId(): string };
+              },
+            ),
+          signal: signal as AbortSignal | undefined,
+          ctx: ctx as unknown as Parameters<ToolDefinition["execute"]>[4],
+        });
+        // SAFETY: res is validated tool result after the fused run — cast to pi ToolDef return type for registration
         return res as unknown as ReturnType<ToolDef["execute"]> extends Promise<infer R>
           ? R
           : never;
@@ -129,8 +140,40 @@ export function regEdit(pi: ExtensionAPI): void {
   // WHY: at arm time and drops (cancels) a compute whose session changed before the timer fires,
   // WHY: instead of verifying anchors against a session that never served them.
   let sessionManager: { getSessionId(): string } | undefined;
+  // WHY: a foreign owner that re-claims the name every run would repeat the notice every run; one
+  // WHY: per session is enough to explain the swap, and `session_start` re-arms it on reload/switch.
+  let ownershipReported = false;
   pi.on("session_start", (_event, ctx) => {
     sessionManager = ctx.sessionManager;
+    ownershipReported = false;
   });
   pi.registerTool(buildToolDef(() => sessionManager));
+  // WHY: pi's tool registry is a last-write-wins `Map` with no shadow warning, so a plugin that claims
+  // WHY: `edit` from its own handler displaces this definition while `read` keeps serving HASH anchors —
+  // WHY: the model then holds a schema that cannot accept the anchors it was just handed. Re-assert ours
+  // WHY: at `before_agent_start`: it runs after every `session_start` registration, before the loadout.
+  // WHY: a later-loaded extension claiming `edit` from its OWN `before_agent_start` handler still wins
+  // WHY: this session — the ceiling. Upgrade: re-assert at `turn_start`, or on a post-loadout pi hook.
+  pi.on("before_agent_start", () => {
+    const owner = pi.getAllTools().find((tool) => tool.name === "edit");
+    if (owner === undefined || declaresHashAnchors(owner)) return;
+    pi.registerTool(buildToolDef(() => sessionManager));
+    if (!ownershipReported) {
+      ownershipReported = true;
+      reportWarning(
+        "tool-ownership",
+        `another extension owns \`edit\` (${owner.sourceInfo?.path ?? "unknown source"}); re-registered the hash-anchor definition`,
+      );
+    }
+  });
+}
+
+/** Structural identity of our own wire: the item declares the bare `anchor_from` anchor. */
+function declaresHashAnchors(tool: { parameters?: unknown }): boolean {
+  const properties = (
+    tool.parameters as
+      | { properties?: { edits?: { items?: { properties?: Record<string, unknown> } } } }
+      | undefined
+  )?.properties;
+  return properties?.edits?.items?.properties?.anchor_from !== undefined;
 }

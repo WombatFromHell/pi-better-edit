@@ -1168,12 +1168,13 @@ describe("Edit wire contract — served schema declares optional null (ADR-0036)
   const itemProps = item.properties!;
   const refProps = itemProps.text_ref!.anyOf![0]!.properties!;
 
-  it("admits null in each of the five optional fields", () => {
+  it("admits null in each of the six optional fields", () => {
     const optional: Record<string, unknown> = {
       "edits[].text": itemProps.text,
       "edits[].text_ref": itemProps.text_ref,
       "edits[].at": itemProps.at,
       mode: root.properties!.mode,
+      then_run: root.properties!.then_run,
       "edits[].text_ref.file": refProps.file,
     };
     for (const [name, property] of Object.entries(optional)) {

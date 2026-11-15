@@ -67,7 +67,8 @@ describe("edit payload contract", () => {
     // WHY: Adding one of those keys — or renaming ours — would arm that adapter and let it judge
     // WHY: MVCC line identity with a divergent scheme, producing false "stale" and "out of range"
     // WHY: verdicts on edits our own verification accepts. Change this list deliberately, never
-    // WHY: casually: the coupling is the consequence.
+    // WHY: casually: the coupling is the consequence. `then_run` joins the root list deliberately: it
+    // WHY: is a fusion field, not a mutation key, and it matches no adapter shape above.
     const root = editToolSchema as unknown as {
       properties: Record<string, unknown>;
       additionalProperties?: unknown;
@@ -77,7 +78,7 @@ describe("edit payload contract", () => {
       additionalProperties?: unknown;
     };
 
-    expect(Object.keys(root.properties).sort()).toEqual(["edits", "file", "mode"]);
+    expect(Object.keys(root.properties).sort()).toEqual(["edits", "file", "mode", "then_run"]);
     expect(Object.keys(item.properties).sort()).toEqual([
       "anchor_from",
       "anchor_to",

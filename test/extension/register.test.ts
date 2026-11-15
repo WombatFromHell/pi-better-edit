@@ -30,11 +30,13 @@ describe("extension registration", () => {
     // WHY: the lifecycle hook does the session-start work, and regRead warms expansion grammars; the
     // WHY: janitor's is the fourth, and comes from `JANITOR_EVENTS` below. TWO `tool_call`: the pre-write served hash echo guard and the
     // WHY: search line-number injection (spec §3.1); they filter by tool name independently, so order
-    // WHY: is not load-bearing.
+    // WHY: is not load-bearing. ONE `before_agent_start`: regEdit re-asserts ownership of `edit` when
+    // WHY: another extension claims the name (pi's registry is last-write-wins, no shadow warning).
     const extensionSubscriptions = [
       "session_start",
       "session_start",
       "session_start",
+      "before_agent_start",
       "tool_call",
       "tool_call",
       "tool_result",

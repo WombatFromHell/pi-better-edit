@@ -201,11 +201,19 @@ export async function makeTempDir(prefix: string): Promise<string> {
 // WHY: (#165) tool contexts must carry a session — sessionKeyFor fails loud without one — so the
 // WHY: shared fixture ctx supplies this fixed session to keep read/preview/execute agreeing.
 export const TEST_SESSION_ID = "fixture-session";
-export const testSessionManager = { getSessionId: () => TEST_SESSION_ID };
+// WHY: `getSessionFile` too, because pi's bash reads it to export PI_SESSION_FILE; a fixture ctx
+// WHY: without it makes every fused `then_run` command fail before the shell is spawned.
+export const testSessionManager = {
+  getSessionId: () => TEST_SESSION_ID,
+  getSessionFile: () => undefined,
+};
 
 export function makeFakePiRegistry() {
   const tools = new Map<string, any>();
   const sessionStartHandlers: Array<(event: unknown, ctx: unknown) => unknown> = [];
+  // WHY: pi emits `before_agent_start` inside `_prepareRun()` BEFORE it applies the tool loadout, so a
+  // WHY: `registerTool` from this handler owns the name for the run. The ownership tests need that seam.
+  const beforeAgentStartHandlers: Array<(event: unknown, ctx: unknown) => unknown> = [];
   return {
     pi: {
       registerTool(tool: any) {
@@ -237,11 +245,38 @@ export function makeFakePiRegistry() {
       registerCommand() {},
       on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
         if (event === "session_start") sessionStartHandlers.push(handler);
+        else if (event === "before_agent_start") beforeAgentStartHandlers.push(handler);
       },
       startSession(ctx: unknown) {
         for (const handler of sessionStartHandlers) {
           void handler({ type: "session_start", reason: "startup" }, ctx);
         }
+      },
+      /** One run: `before_agent_start` handlers, in registration order, then the loadout is read. */
+      runTurn(ctx: unknown) {
+        for (const handler of beforeAgentStartHandlers) {
+          void handler(
+            {
+              type: "before_agent_start",
+              messageType: "user",
+              systemPrompt: "",
+              systemPromptOptions: {},
+            },
+            ctx,
+          );
+        }
+      },
+      getAllTools() {
+        return [...tools.values()].map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+          promptGuidelines: tool.promptGuidelines,
+          exposure: "direct",
+        }));
+      },
+      getActiveTools() {
+        return [...tools.keys()];
       },
     } as any,
     getTool(name: string) {

@@ -4,6 +4,7 @@ import { DomainError } from "./domain-errors.js";
 import { HASH_LEN } from "./hashline/alphabet.js";
 import type { EditPlacement } from "./hashline/resolve.js";
 import { rejectUnknownFields } from "./utils.js";
+import type { ThenRunInput } from "./then-run.js";
 
 const normalizedEdit = Symbol("normalizedEdit");
 
@@ -77,6 +78,8 @@ type PreAdmissionRequest = {
   file: string;
   edits: EditItem[];
   mode?: EditMode;
+  /** Run after the mutation commits; never part of the engine's normalized record. */
+  then_run?: ThenRunInput;
 };
 type NormalizedPayload = NormalizedEditRequest & {
   readonly [normalizedEdit]: true;
@@ -170,6 +173,17 @@ export const editItemSchema = Type.Object(
   },
 );
 
+/** A follow-up command: run only after the mutation commits, in the same observation. */
+const thenRunSchema = Type.Object(
+  {
+    command: Type.String({ description: "Bash command to run after the mutation succeeds" }),
+    timeout: Type.Optional(
+      Type.Number({ description: "Timeout in seconds (optional, no default timeout)" }),
+    ),
+  },
+  { additionalProperties: false, description: "Command to run after the mutation succeeds" },
+);
+
 export const editToolSchema = Type.Object(
   {
     file: editFileSchema,
@@ -179,6 +193,7 @@ export const editToolSchema = Type.Object(
       maxItems: EDITS_MAX_ITEMS,
     }),
     mode: Type.Optional(Type.Union([editModeSchema, Type.Null()])),
+    then_run: Type.Optional(Type.Union([thenRunSchema, Type.Null()])),
   },
   { additionalProperties: false },
 );
@@ -194,9 +209,10 @@ const EDIT_PAYLOAD_HINT =
   'range) or "text_ref" ({ anchor_from, anchor_to, file?, mode (required): "copy" | "cut" } — the served span\'s bytes, ' +
   '"file" may name another served file, where both modes apply too); optional "at" is "in-place" (default), ' +
   '"before" or "after" (single-line resolved target only); optional "mode" is "general" (default, reproduced ' +
-  'served rows are refused) or "literal" (declared literal content).';
+  'served rows are refused) or "literal" (declared literal content); optional "then_run" ({ command, timeout? }) ' +
+  'runs a command only after the mutation commits, reported as "[then_run:succeeded|failed|skipped]" in one observation.';
 export const EDIT_DESCRIPTION = `Edit a range of lines in a text file via \`edit\`: \`{ "file": file, "edits": [{ "anchor_from": a, "anchor_to": b, "text": text }, ...] }\` (one file per call). Use rows this session served for the file: \`read\`, a diff, or a bash view. \`anchor_from\`/\`anchor_to\` are bare ${HASH_LEN}-char HASH anchors. Copy the ${HASH_LEN} chars before \`│\` in this file's served rows (lease (session, file, anchor)). One payload per item: \`text\` (\`\\n\` joins lines, \`""\` deletes) or \`text_ref\` \`{anchor_from, anchor_to, mode (required), file?}\`, the bytes of a served span (\`mode\` \`"copy"\` keeps it, \`"cut"\` removes it). \`file\` names another served file. \`at\`: "in-place" (default), "before", "after". A null optional field reads as absent. \`[MODEL] [E_*]\` is your retry instruction. \`[W_*]\` is informational.`;
-export const EDIT_SNIPPET = `Edit a file range via \`edit\`: \`{"file":file,"edits":[{"anchor_from":a,"anchor_to":b,"text":text}]}\` — anchors are bare ${HASH_LEN}-char hashes copied from served \`HASH│content\` from rows this file served this session. One payload per item: \`text\` is bare content (\`""\` deletes) or \`text_ref\` writes a served span (\`"copy"\` keeps source, \`"cut"\` removes it from this file or \`file\`). \`at\`: "in-place" (default), "before", "after". Chain from diff anchors.`;
+export const EDIT_SNIPPET = `Edit a file range via \`edit\`: \`{"file":file,"edits":[{"anchor_from":a,"anchor_to":b,"text":text}]}\` — anchors are bare ${HASH_LEN}-char hashes copied from served \`HASH│content\` from rows this file served this session. One payload per item: \`text\` is bare content (\`""\` deletes) or \`text_ref\` writes a served span (\`"copy"\` keeps source, \`"cut"\` removes it from this file or \`file\`). \`at\`: "in-place" (default), "before", "after". \`then_run:{command,timeout?}\` runs the command after the mutation succeeds. Chain from diff anchors.`;
 export const EDIT_GUIDELINES: string[] = [
   `edit: an \`anchor\` is the bare ${HASH_LEN}-char hash (for example "wUpX"). A \`HASH│content\` line (for example \`wUpX│    pass\`) is a served row, and \`│\` separates the two. Copy only the ${HASH_LEN} chars before \`│\` into \`anchor_from\`/\`anchor_to\`.`,
   "edit: give each item two anchors and exactly one payload. `file` is the text file. One item is one edit. Several items batch to that one file. Choose one payload field: `text` or `text_ref`. `at` is optional. A null in an optional field (`text`, `text_ref`, `at`, the top-level `mode`, `text_ref.file`) reads as absent. A null in a required field (`file`, `edits`, any anchor, `text_ref.mode`) is refused.",
@@ -208,6 +224,7 @@ export const EDIT_GUIDELINES: string[] = [
   "edit: after success the diff serves fresh `HASH│content` rows: context rows and `+` rows. Copy new anchors from the diff for your next call. Verify that the diff matches your intended mutation.",
   "edit: a `[MODEL] [W_*]` line in `content` is informational. The mutation was applied. A `[MODEL] [E_*]` line is your retry instruction or a rejection: follow it from the message alone. A `[MODEL]` line that presents `Current range (fresh read):` shows the current rows. Decide from them. A dimmed `[USER]` line in `details` is human info.",
   "edit: batch independent ranges in one `edits` array. Inside it, every edit validates BEFORE the first rename, and any failure there writes nothing. A foreign `cut` writes its files in a fixed order, and a defeated rollback restores captured bytes or is repaired on the next run.",
+  "edit: `then_run` `{command, timeout?}` runs the command only after the mutation commits, in the same observation. A refused mutation reports `[then_run:skipped]` and runs nothing. A failed command reports `[then_run:failed]` and the mutation stays applied.",
 ];
 
 function _getPayloadPromptFragments(): {
@@ -433,14 +450,14 @@ function analyzeRequest(input: unknown): Admission {
     return { ok: false, message: `${EDIT_PAYLOAD_HINT} ${describeReceived(input)}` };
   }
   const rec = input as Record<string, unknown>;
-  const rootBase = new Set(["file", "edits", "mode"]);
+  const rootBase = new Set(["file", "edits", "mode", "then_run"]);
   const rootOffending = Object.keys(rec).filter((key) => !rootBase.has(key));
   if (rootOffending.length > 0) {
     return {
       ok: false,
       message:
         `Edit request has unsupported field(s) ${quoted(rootOffending)}; it is exactly ` +
-        `{ file, edits: [{ anchor_from, anchor_to, text | text_ref[, at] }, ...], mode?: "general" | "literal" }. ` +
+        `{ file, edits: [{ anchor_from, anchor_to, text | text_ref[, at] }, ...], mode?: "general" | "literal", then_run?: { command, timeout? } }. ` +
         describeReceived(input),
     };
   }
@@ -453,6 +470,28 @@ function analyzeRequest(input: unknown): Admission {
       };
     }
     mode = rec.mode;
+  }
+  let thenRun: ThenRunInput | undefined;
+  if ("then_run" in rec && !isAbsentValue(rec.then_run)) {
+    const requested = rec.then_run;
+    if (
+      !isRec(requested) ||
+      typeof requested.command !== "string" ||
+      requested.command === "" ||
+      ("timeout" in requested &&
+        !isAbsentValue(requested.timeout) &&
+        typeof requested.timeout !== "number")
+    ) {
+      return {
+        ok: false,
+        message: `Edit request "then_run" must be { command: non-empty string, timeout?: number } (absent means no command). ${EDIT_PAYLOAD_HINT}`,
+      };
+    }
+    // WHY: a spelled `null` timeout reads as absent, like every other optional slot (ticket-75).
+    thenRun =
+      typeof requested.timeout === "number"
+        ? { command: requested.command, timeout: requested.timeout }
+        : { command: requested.command };
   }
   if (!("file" in rec)) {
     return {
@@ -493,8 +532,10 @@ function analyzeRequest(input: unknown): Admission {
   if (failures.length > 0) {
     return { ok: false, message: `${failures.join(" ")} ${describeReceived(input)}` };
   }
-  if (mode !== undefined) return { ok: true, request: { file, edits: edited, mode } };
-  return { ok: true, request: { file, edits: edited } };
+  const request: PreAdmissionRequest =
+    mode !== undefined ? { file, edits: edited, mode } : { file, edits: edited };
+  if (thenRun !== undefined) request.then_run = thenRun;
+  return { ok: true, request };
 }
 
 export function editRequestFrom(input: unknown): PreAdmissionRequest | undefined {
