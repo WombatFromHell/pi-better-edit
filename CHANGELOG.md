@@ -8,6 +8,10 @@
 
 * **edit:** report an `edit` ownership collision once per session. pi resolves a name by the FIRST extension that registered it, so a package listed before us owns `edit` for the whole session and no later re-registration displaces it: the model would hold an exact-text schema while `read` serves HASH anchors. The notice names the owner and the remedy — list pi-better-edit before it in `settings.packages`.
 
+### Bug Fixes
+
+* **edit:** a same-file refusal raised inside a batch after an earlier item of the call had already changed the temporary buffer (`[E_STALE_RANGE]`, `[E_UNVERIFIED_RANGE]`, `[E_STALE_ANCHOR]`) serves no rows: those rows come from a buffer the call never committed as the current on-disk state, so none are shown, recorded as served, or granted leases. The prior served record is preserved and the headline names the current-file lines an anchored read would serve. Reject-and-serve against the on-disk baseline is unchanged.
+
 ## [2.18.0] - 2026-11-07
 
 ### Features
