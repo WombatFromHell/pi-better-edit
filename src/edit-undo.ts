@@ -26,6 +26,7 @@ import { DEFERRED_STORE_SYNC_WARNING } from "./constants.js";
 import { toLF, stripBOM, genDiff, restoreEndings, type LineEnding } from "./edit-diff.js";
 import { visLines, splitLines, errCode } from "./utils.js";
 import { loadP, loadGuide } from "./prompts.js";
+import { CODEMODE_SURFACE } from "./payload-contract.js";
 import { buildMetrics, type EditDetails } from "./edit-response.js";
 import { DomainError, withPayloadSubject } from "./domain-errors.js";
 import { ANCHOR_GENERATION, lineHashes } from "./hashline/hash-identity.js";
@@ -570,6 +571,8 @@ export function regEditUndo(pi: ExtensionAPI): void {
     description: loadP("../prompts/undo-last-edit.md"),
     promptSnippet: loadP("../prompts/undo-last-edit-snippet.md"),
     promptGuidelines: loadGuide("../prompts/undo-last-edit-guidelines.md"),
+    // WHY: script-reachable under every codemode mode; see CODEMODE_SURFACE in payload-contract.
+    ...CODEMODE_SURFACE,
     parameters: Type.Object({
       path: Type.String({
         description: "Path to the file to undo",

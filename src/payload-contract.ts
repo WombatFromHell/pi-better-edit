@@ -227,6 +227,30 @@ export const EDIT_GUIDELINES: string[] = [
   "edit: `then_run` `{command, timeout?}` runs the command only after the mutation commits, in the same observation. A refused mutation reports `[then_run:skipped]` and runs nothing. A failed command reports `[then_run:failed]` and the mutation stays applied.",
 ];
 
+/**
+ * WHY: pi lists a namespace heading with its description to codemode and hands the longer guidance to
+ * WHY: `describeNamespace()`; a tool's own `promptGuidelines` never reach a script
+ * WHY: (`docs/codemode.md:50`, `docs/extensions.md:2778`), so the anchor contract a script needs has
+ * WHY: to live on the namespace. WHY one constant for all three tools: three hand-written copies
+ * WHY: drift, and the namespace is shared by `read`, `edit` and `undo_last_edit`.
+ * WHY: pi 0.84 ignores `exposure` and `namespace`, pi 1.x honours them, so the devDependency's
+ * WHY: `ToolDefinition` models neither — the spread is typed loosely and stays inert on the floor.
+ */
+export const CODEMODE_SURFACE: Record<string, unknown> = {
+  exposure: "direct",
+  namespace: {
+    name: "hashline",
+    aliases: ["hash-anchored"],
+    description:
+      "Hash-anchored file tools: `read` serves `HASH│content` rows, `edit` applies them, `undo_last_edit` reverts the last edit.",
+    instructions: [
+      `read: a served row is \`HASH│content\`; the anchor is the ${HASH_LEN} chars before \`│\`. Copy those into \`anchor_from\`/\`anchor_to\`, never the content.`,
+      ...EDIT_GUIDELINES,
+      "undo_last_edit: `{path}` reverts the last edit for that file, across restarts. A row carrying a transaction reverts both files of the batch, or fails with nothing reverted.",
+    ].join("\n"),
+  },
+};
+
 function _getPayloadPromptFragments(): {
   description: string;
   snippet: string;

@@ -19,6 +19,7 @@ import {
   editFileSchema,
   editModeSchema,
   assertReq,
+  CODEMODE_SURFACE,
 } from "./payload-contract.js";
 import { withPayloadSubject } from "./domain-errors.js";
 import { attributePayloadSubject } from "./error-envelope.js";
@@ -86,6 +87,8 @@ export function buildToolDef(
     parameters,
     promptSnippet: E_SNIPPET,
     promptGuidelines: E_GUIDE,
+    // WHY: script-reachable under every codemode mode; see CODEMODE_SURFACE in payload-contract.
+    ...CODEMODE_SURFACE,
     // WHY: an admission refusal raised here carries no subject, so it must name the edit tool.
     // WHY: Without the stamp the model reads the neutral wording — the analyzer names no caller.
     prepareArguments: (args: unknown) => {

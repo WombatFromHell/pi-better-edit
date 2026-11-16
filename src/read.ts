@@ -46,6 +46,7 @@ import {
 } from "./snapshot-store";
 import { lineHashes } from "./hashline/hash-identity.js";
 import { reportDiagnostic, reportWarning } from "./diagnostics.js";
+import { CODEMODE_SURFACE } from "./payload-contract.js";
 import { visibleLineTotal, walkLines } from "./file-content/line-walker.js";
 import type { SpanProvider } from "./read-expansion/provider-contract.js";
 import type { OutlineFoldRange } from "./hashline/resolve.js";
@@ -408,6 +409,9 @@ export function regRead(pi: ExtensionAPI, options?: { spanProvider?: SpanProvide
       });
     },
     parameters: readToolSchema,
+    // WHY: script-reachable under every codemode mode, and the namespace is where the anchor contract
+    // WHY: reaches a script — codemode lists declarations, not promptGuidelines.
+    ...CODEMODE_SURFACE,
     // WHY: recorded flat payloads (`path`/`offset`/`limit`) reach execute through replay, and the
     // WHY: model-facing schema deliberately stays the canonical `{ file, windows, mode }` shape.
     // SAFETY: the normalizer returns the canonical shape when it can; an invalid legacy payload

@@ -5,7 +5,12 @@ import { describe, expect, it } from "vitest";
 import { loadGuide, loadP } from "../../src/prompts";
 import { regRead } from "../../src/read";
 import { makeFakePiRegistry } from "../support/fixtures";
-import { EDIT_DESCRIPTION, EDIT_SNIPPET, EDIT_GUIDELINES } from "../../src/payload-contract";
+import {
+  CODEMODE_SURFACE,
+  EDIT_DESCRIPTION,
+  EDIT_SNIPPET,
+  EDIT_GUIDELINES,
+} from "../../src/payload-contract";
 import { buildToolDef } from "../../src/edit";
 import { HASH_LEN } from "../../src/hashline/alphabet.js";
 
@@ -271,6 +276,22 @@ describe("EDIT_DESCRIPTION null rule (ticket-75)", () => {
     // WHY: is the #67 class of defect, so the claim itself is pinned as served.
     expect(EDIT_DESCRIPTION).toContain("null optional field");
     expect(EDIT_DESCRIPTION).toContain("reads as absent");
+  });
+});
+
+describe("CODEMODE_SURFACE namespace (the script-facing contract)", () => {
+  const instructions = (CODEMODE_SURFACE.namespace as { instructions: string }).instructions;
+
+  it("carries every edit guideline, so the script surface cannot drift from the model surface", () => {
+    // WHY: codemode hands a script the namespace instructions, not `promptGuidelines`, so the rules a
+    // WHY: script obeys are this text. It is built from the same single-sourced list the model reads.
+    for (const line of EDIT_GUIDELINES) expect(instructions).toContain(line);
+  });
+
+  it("states the read copy rule and undo in the namespace too", () => {
+    expect(instructions).toContain("HASH│");
+    expect(instructions).toContain("undo_last_edit");
+    expect(CODEMODE_SURFACE.exposure).toBe("direct");
   });
 });
 
