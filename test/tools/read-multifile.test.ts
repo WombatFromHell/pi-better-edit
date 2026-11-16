@@ -191,9 +191,11 @@ describe("read tool — single file", () => {
         offset: index + 1,
         limit: 1,
       }));
+      // WHY: the flat schema cannot know the mode, so width is not its cap — admission refuses it
+      // WHY: in the tool's own wording, for every mode except outline.
       await expect(
         readTool.execute("r1", { file: "a.ts", windows: seventeen }, undefined, undefined, ctx),
-      ).rejects.toThrow(new RegExp(`must not have more than ${MAX_READ_WINDOWS} items`));
+      ).rejects.toThrow(MAX_READ_WINDOWS_MESSAGE);
     });
   });
 
@@ -203,7 +205,7 @@ describe("read tool — single file", () => {
         offset: index + 1,
         limit: 1,
       }));
-      // WHY: the registered schema (`maxItems`) and admission both name this cap, and the preview's
+      // WHY: admission names this cap for validated callers, and the preview's runtime mirror is
       // WHY: runtime mirror is what a DIRECT `fmtReadPreview` caller hits — so the mirror must use the
       // WHY: same message, not a third spelling of the same limit.
       await expect(fmtReadPreview(TWELVE, { windows: tooMany }, undefined, path)).rejects.toThrow(
@@ -454,6 +456,8 @@ describe("read payload contract", () => {
   it("refuses shapes outside the contract", () => {
     expect(validator.Check({} as never)).toBe(false);
     expect(validator.Check({ file: "a.ts", windows: [{ around_anchor: "abc" }] })).toBe(false);
+    // WHY: width is admission's cap, not the schema's: the flat object cannot know the mode
+    // WHY: (outline lifts the cap), so a 17-window call validates here and is refused at execute.
     expect(
       validator.Check({
         file: "a.ts",
@@ -462,7 +466,7 @@ describe("read payload contract", () => {
           limit: 1,
         })),
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("rejects the retired `{ files: [...] }` outer shape at the schema (ADR-0041 D1)", () => {

@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { readToolSchema } from "../../src/read";
+import { Compile } from "typebox/compile";
 
 const INTEGRATION_DIR = join("src", "integrations", "pi-lens");
 const ENTRY = "index.ts";
@@ -80,14 +81,33 @@ describe("lens bridge boundary", () => {
     }
   });
 
-  it("keeps the read payload flat and window-scoped", () => {
-    // WHY: outline mode lifts the window-count cap (it ignores caller windows), so the schema
-    // WHY: is one variant per mode family — both variants stay flat with the same three keys.
-    const variants = (readToolSchema as unknown as { anyOf: Array<{ properties: object }> }).anyOf;
-    expect(variants).toHaveLength(2);
-    for (const variant of variants) {
-      expect(Object.keys(variant.properties).sort()).toEqual(["file", "mode", "windows"]);
+  it("keeps the read payload one flat object the model can emit arguments for", () => {
+    // WHY: the wire assertion is on the serialised schema, because that is what the model sees — a
+    // WHY: chat template renders the tool verbatim (`tool | tojson`). A top-level `anyOf` carries no
+    // WHY: top-level `properties`, and a local llama.cpp/Qwen stack served it verbatim emitted
+    // WHY: `arguments: {}` for every `read` call, so the tool was silently unusable. One flat object
+    // WHY: is the shape every other tool in the set already has; the per-mode window cap belongs to
+    // WHY: admission, which knows the mode (outline ignores caller windows and lifts the cap).
+    const wire = JSON.parse(JSON.stringify(readToolSchema)) as {
+      type?: string;
+      anyOf?: unknown;
+      required?: string[];
+      properties: Record<string, unknown>;
+    };
+    expect(wire.anyOf).toBeUndefined();
+    expect(wire.type).toBe("object");
+    expect(wire.required).toEqual(["file"]);
+    expect(Object.keys(wire.properties).sort()).toEqual(["file", "mode", "windows"]);
+
+    // WHY: every mode family and the omitted mode validate against the one object — the acceptance
+    // WHY: language of the retired two-variant union, minus its top-level shape.
+    const validator = Compile(readToolSchema);
+    expect(validator.Check({ file: "a.ts" })).toBe(true);
+    for (const mode of ["served", "verbatim", "outline"]) {
+      expect(validator.Check({ file: "a.ts", mode }), mode).toBe(true);
     }
+    expect(validator.Check({ file: "a.ts", windows: [{ offset: 1, limit: 5 }] })).toBe(true);
+    expect(validator.Check({ file: "a.ts", windows: [{ around_anchor: "abcd" }] })).toBe(true);
   });
 
   it("wires the command and the unified adapter from the extension entry point", () => {

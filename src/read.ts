@@ -3,7 +3,7 @@ import { createReadTool, createReadToolDefinition } from "@earendil-works/pi-cod
 import type { TruncationResult } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
-import { MAX_READ_WINDOWS, SERVED_MAX_LINES } from "./constants.js";
+import { SERVED_MAX_LINES } from "./constants.js";
 import { HASH_LEN } from "./hashline/alphabet.js";
 import type { ServedRow } from "./served-session/serve-render.js";
 import { loadHashStore, type HashStore } from "./hash-store.js";
@@ -125,34 +125,27 @@ const readWindowSchema = Type.Union([readAnchorWindowSchema, readOffsetWindowSch
 // WHY: one file per call (ADR-0041 D1): `file` names it, `windows` scopes it, `mode` renders
 // WHY: it. Parallel reads are parallel tool calls — there is no outer array and no per-file mode.
 // WHY: A payload without `file` fails validation before admission runs.
-export const readToolSchema = Type.Union(
-  [
-    Type.Object({
-      file: Type.String({ description: "Path to the file to read (relative or absolute)." }),
-      windows: Type.Optional(
-        Type.Array(readWindowSchema, {
-          description:
-            "One or more line ranges in this file, each either { offset, limit } or { around_anchor, radius }; ignored in outline mode, which serves only symbol declaration lines",
-        }),
-      ),
-      mode: Type.Literal("outline", { description: OUTLINE_MODE_DESCRIPTION }),
-    }),
-    Type.Object({
-      file: Type.String({ description: "Path to the file to read (relative or absolute)." }),
-      windows: Type.Optional(
-        Type.Array(readWindowSchema, {
-          maxItems: MAX_READ_WINDOWS,
-          description:
-            "One or more line ranges in this file, each either { offset, limit } or { around_anchor, radius }; in the default `served` mode every window's rows are served, so anchors from all of them work in a single `edit`",
-        }),
-      ),
-      mode: Type.Optional(
-        Type.Union([Type.Literal("served"), Type.Literal("verbatim")], {
-          description: OUTLINE_MODE_DESCRIPTION,
-        }),
-      ),
-    }),
-  ],
+// WHY: ONE flat object, not a per-mode union: a top-level `anyOf` has no top-level `properties`, and
+// WHY: a chat template that renders the tool verbatim (`tool | tojson`) hands that shape to models
+// WHY: that cannot map it to arguments — on a local llama.cpp/Qwen stack every `read` call arrived
+// WHY: as `arguments: {}`. Flat is the shape every other tool here already has.
+// WHY: The 16-window cap is deliberately NOT in the schema: admission knows the mode and lifts the
+// WHY: cap for outline, which ignores caller windows (src/file-content/admission.ts).
+export const readToolSchema = Type.Object(
+  {
+    file: Type.String({ description: "Path to the file to read (relative or absolute)." }),
+    windows: Type.Optional(
+      Type.Array(readWindowSchema, {
+        description:
+          "One or more line ranges in this file, each either { offset, limit } or { around_anchor, radius }; in the default `served` mode every window's rows are served, so anchors from all of them work in a single `edit`; ignored in outline mode, which serves only symbol declaration lines",
+      }),
+    ),
+    mode: Type.Optional(
+      Type.Union([Type.Literal("served"), Type.Literal("verbatim"), Type.Literal("outline")], {
+        description: OUTLINE_MODE_DESCRIPTION,
+      }),
+    ),
+  },
   { description: OUTLINE_MODE_DESCRIPTION },
 );
 
@@ -416,8 +409,8 @@ export function regRead(pi: ExtensionAPI, options?: { spanProvider?: SpanProvide
     // WHY: model-facing schema deliberately stays the canonical `{ file, windows, mode }` shape.
     // SAFETY: the normalizer returns the canonical shape when it can; an invalid legacy payload
     // SAFETY: falls through to schema validation, which is exactly where it must be refused.
-    // WHY: (#272) the union validator reports the outline variant's missing `mode` beside a rejected
-    // WHY: `windows`, so the guard runs BEFORE it and the model reads the window contract instead.
+    // WHY: (#272) schema validation reports a rejected `windows` in JSON-Schema wording, so the
+    // WHY: guard runs BEFORE it and the model reads the tool's own window contract instead.
     prepareArguments: (args: unknown) => {
       try {
         const prepared = normalizeReadPayload(args as RawReadParams);

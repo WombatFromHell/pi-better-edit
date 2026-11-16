@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Compile } from "typebox/compile";
-import { MAX_READ_WINDOWS } from "../../src/constants";
+import { MAX_READ_WINDOWS, MAX_READ_WINDOWS_MESSAGE } from "../../src/constants";
 import { OUTLINE_IGNORED_WINDOWS_WARNING } from "../../src/file-content/admission";
 import { regEdit } from "../../src/edit";
 import { readToolSchema, regRead } from "../../src/read";
@@ -159,16 +159,30 @@ describe("read mode outline", () => {
       offset: index + 1,
       limit: 1,
     }));
-    // WHY: the fan-out cap still binds every mode except outline — the schema mirrors the
-    // WHY: admission split per-variant, so a 17-window served call fails validation here.
-    expect(validator.Check({ file: "sample.ts", windows: callerWindows })).toBe(false);
+    // WHY: the flat schema cannot know the mode, so no variant caps width: all three shapes
+    // WHY: validate here, and the fan-out cap is admission's, per mode.
+    expect(validator.Check({ file: "sample.ts", windows: callerWindows })).toBe(true);
     expect(validator.Check({ file: "sample.ts", windows: callerWindows, mode: "served" })).toBe(
-      false,
+      true,
     );
     // WHY: outline ignores caller windows, so the same width validates and serves.
     expect(validator.Check({ file: "sample.ts", windows: callerWindows, mode: "outline" })).toBe(
       true,
     );
+    // WHY: the cap still binds every mode except outline — a 17-window served call is refused at
+    // WHY: execute, in admission's own wording.
+    await withTempFile("sample.ts", SAMPLE, async ({ cwd }) => {
+      const { readTool } = toolsWithOutline(SYMBOLS);
+      await expect(
+        readTool.execute(
+          "r2",
+          { file: "sample.ts", windows: callerWindows },
+          undefined,
+          undefined,
+          ctxFor(cwd),
+        ),
+      ).rejects.toThrow(MAX_READ_WINDOWS_MESSAGE);
+    });
     await withTempFile("sample.ts", SAMPLE, async ({ cwd }) => {
       const { readTool } = toolsWithOutline(SYMBOLS);
       const result = await readTool.execute(
