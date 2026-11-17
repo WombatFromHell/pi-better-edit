@@ -101,7 +101,7 @@ export function buildToolDef(
     renderShell: "default",
     // SAFETY: presenter owns TUI casts — asToolDef returns ToolDefinition-typed renders, edit.ts has zero direct TUI casts
     ...presenter.asToolDef(),
-    async execute(toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
       // SAFETY: pi execute boundary is untyped — ctx narrowed via sessionKeyFor, signal is AbortSignal validated by engine
       const record = params as Record<string, unknown>;
       // WHY: `then_run` belongs to the fusion, not the engine: the normalized record keeps the canonical key set.
@@ -121,6 +121,7 @@ export function buildToolDef(
               },
             ),
           signal: signal as AbortSignal | undefined,
+          onUpdate,
           ctx: ctx as unknown as Parameters<ToolDefinition["execute"]>[4],
         });
         // SAFETY: res is validated tool result after the fused run — cast to pi ToolDef return type for registration

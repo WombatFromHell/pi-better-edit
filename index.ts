@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { regEdit } from "./src/edit.js";
 import { regEditUndo } from "./src/edit-undo.js";
+import { regThenRunJobs } from "./src/then-run-jobs.js";
 import { regRead } from "./src/read.js";
 import { registerWriteHook } from "./src/write-hook.js";
 
@@ -20,6 +21,8 @@ export default function (pi: ExtensionAPI): void {
 
   regEdit(pi);
   regEditUndo(pi);
+  // WHY: the fused command may outlive its foreground window; this tool is the only way to read it.
+  regThenRunJobs(pi);
   registerWriteHook(pi);
 
   registerSearchHook(pi);

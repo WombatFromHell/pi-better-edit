@@ -14,13 +14,21 @@ describe("codemode surface — hash-anchored tools reachable from scripts", () =
   const fixture = makeFakePiRegistry();
   register(fixture.pi);
 
-  it("declares exactly the three names and never claims write or codemode", () => {
-    expect(fixture.pi.getActiveTools().sort()).toEqual(["edit", "read", "undo_last_edit"]);
+  it("declares exactly the four names and never claims write or codemode", () => {
+    expect(fixture.pi.getActiveTools().sort()).toEqual([
+      "edit",
+      "read",
+      "then_run_job",
+      "undo_last_edit",
+    ]);
     // WHY: these are the names the operator's other packages own — SoL-Pi's fused `write`
     // (`extensions/action-fusion/index.ts:133`) and pi's built-in `codemode`. Claiming either would
     // clobber them, since pi keeps the first extension that registered a name.
     expect(() => fixture.getTool("write")).toThrow();
     expect(() => fixture.getTool("codemode")).toThrow();
+    // WHY: `then_run_job` reads job status, not anchors, so it stays outside this namespace and its
+    // WHY: instructions — a script sees the anchor contract only for the anchor tools.
+    expect(fixture.getTool("then_run_job").namespace).toBeUndefined();
   });
 
   it("stays callable from scripts under every codemode mode", () => {

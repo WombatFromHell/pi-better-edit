@@ -750,3 +750,81 @@ describe("reuseText / reuseMarkdown", () => {
     expect((m as any).text).toBe("new");
   });
 });
+
+describe("render — then_run", () => {
+  const theme = {
+    fg: (_name: string, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    underline: (text: string) => text,
+    strikethrough: (text: string) => text,
+  } as any;
+  const context = (state: RRState) =>
+    ({ state, lastComponent: undefined, isError: false, expanded: false }) as any;
+
+  it("names the command in the call header", () => {
+    const tool = buildToolDef();
+    const ctx = context({});
+    const component = tool.renderCall!(
+      {
+        file: "sample.ts",
+        edits: [{ anchor_from: "aaaa", anchor_to: "aaaa", text: "X" }],
+        then_run: { command: "pnpm test", timeout: 300 },
+      },
+      theme,
+      ctx,
+    ) as Text;
+    expect((ctx.state as RRState).thenRunCommand).toBe("pnpm test");
+    expect((component as any).text).toContain("then_run: pnpm test");
+  });
+
+  it("shows the command and its streamed output while the result is partial", () => {
+    const tool = buildToolDef();
+    const component = tool.renderResult!(
+      { content: [{ type: "text", text: "running suite\n10 passed" }], details: { diff: "" } },
+      { isPartial: true, expanded: false },
+      theme,
+      context({ thenRunCommand: "pnpm test" }),
+    ) as Text;
+    const text = (component as any).text as string;
+    expect(text).toContain("then_run pnpm test");
+    expect(text).toContain("10 passed");
+  });
+
+  it("keeps the plain notice when no command was asked for", () => {
+    const tool = buildToolDef();
+    const component = tool.renderResult!(
+      undefined as any,
+      { isPartial: true, expanded: false },
+      theme,
+      context({}),
+    ) as Text;
+    expect((component as any).text).toBe("Editing...");
+  });
+
+  it("appends the command tail to an applied result", () => {
+    const tool = buildToolDef();
+    const component = tool.renderResult!(
+      {
+        content: [{ type: "text", text: "Successfully edited sample.ts" }],
+        details: {
+          diff: "-aaa\n+bbb",
+          metrics: {
+            classification: "applied",
+            edits_attempted: 1,
+            edits_noop: 0,
+            warnings: 0,
+            added_lines: 1,
+            removed_lines: 1,
+          },
+          thenRunTail: "[then_run:succeeded]\n1 test passed",
+        },
+      },
+      { expanded: false, isPartial: false },
+      theme,
+      context({}),
+    ) as Text;
+    expect((component as any).text).toContain("[then_run:succeeded]");
+    expect((component as any).text).toContain("1 test passed");
+  });
+});

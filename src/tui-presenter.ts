@@ -8,6 +8,7 @@ import {
   buildAppliedText,
   mkMdTheme,
   fmtCall,
+  fmtCommandOutput,
   fmtResultMd,
   getPreviewInput,
   getResultText,
@@ -52,6 +53,13 @@ function makeRenderCall(preview: DebouncedPreview) {
     };
     // SAFETY: pi TUI renderCall expects untyped context — cast isolates to adapter, validated by pi's runtime context shape
     preview.renderCall(ctx as unknown as Parameters<DebouncedPreview["renderCall"]>[0], args);
+    // WHY: the fused command lives in the call args, and pi hands the same state object to every
+    // WHY: render of this call, so the partial render below can name it while the command runs.
+    const command = (args as { then_run?: { command?: unknown } })?.then_run?.command;
+    const state = (ctx as unknown as { state?: RRState }).state;
+    if (state && typeof command === "string" && command.length > 0) {
+      state.thenRunCommand = command;
+    }
     const text = (ctx.lastComponent as Text | undefined) ?? new Text("", 0, 0);
     // SAFETY: pi context carries untyped state/expanded — cast to RRState/boolean narrowed by getPreviewInput and theme contract
     text.setText(
@@ -73,20 +81,29 @@ function makeRenderResult(preview: DebouncedPreview) {
       state: unknown;
       isError: boolean;
     };
-    if (opts.isPartial)
-      return reuseText(
-        ctx,
-        (theme as { fg: (a: string, b: string) => string }).fg("warning", "Editing..."),
+    // SAFETY: pi TUI context state is untyped at boundary — cast to RRState narrowed by the preview
+    // SAFETY: lifecycle and by the fused command captured in renderCall (covers ctx and state casts)
+    const renderState = (ctx as unknown as { state: RRState | undefined }).state as
+      | RRState
+      | undefined;
+    if (opts.isPartial) {
+      // WHY: pi streams the fused command's output only when the tool hands it an update callback, so
+      // WHY: this row is the only place the operator sees which command is running and how far it got.
+      const fg = (theme as { fg: (a: string, b: string) => string }).fg;
+      const head = renderState?.thenRunCommand
+        ? fg("warning", `then_run ${renderState.thenRunCommand}`)
+        : fg("warning", "Editing...");
+      const tail = fmtCommandOutput(
+        getResultText(result as { content?: Array<{ type: string; text?: string }> }) ?? "",
+        theme as never,
       );
+      return reuseText(ctx, tail.length > 0 ? `${head}\n${tail}` : head);
+    }
     const typedResult = result as {
       content?: Array<{ type: string; text?: string }>;
       details?: EditDetails;
     };
     const renderedText = getResultText(typedResult);
-    // SAFETY: pi TUI context state is untyped at boundary — cast to RRState narrowed by preview lifecycle (covers ctx and state casts)
-    const renderState = (ctx as unknown as { state: RRState | undefined }).state as
-      | RRState
-      | undefined;
     if (renderState) preview.clearResult(renderState);
     if (isErrorContext(ctx))
       return renderedText

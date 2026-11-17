@@ -22,7 +22,7 @@ describe("extension registration", () => {
 
     register(pi);
 
-    expect(toolNames.sort()).toEqual(["edit", "read", "undo_last_edit"]);
+    expect(toolNames.sort()).toEqual(["edit", "read", "then_run_job", "undo_last_edit"]);
     expect(commandNames).toEqual(["pi-better-edit"]);
 
     // WHY: the extension's own subscriptions, one entry per `pi.on` site in `index.ts`'s factory.

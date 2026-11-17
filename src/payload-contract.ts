@@ -4,7 +4,11 @@ import { DomainError } from "./domain-errors.js";
 import { HASH_LEN } from "./hashline/alphabet.js";
 import type { EditPlacement } from "./hashline/resolve.js";
 import { rejectUnknownFields } from "./utils.js";
-import type { ThenRunInput } from "./then-run.js";
+import {
+  normalizeThenRunTimeout,
+  THEN_RUN_CEILING_SECONDS,
+  type ThenRunInput,
+} from "./then-run.js";
 
 const normalizedEdit = Symbol("normalizedEdit");
 
@@ -173,12 +177,20 @@ export const editItemSchema = Type.Object(
   },
 );
 
+/**
+ * Ceiling for a follow-up command whose timeout is absent or unusable. pi's bash definition arms no
+ * timer for an undefined timeout (`resolveTimeoutMs`), so an omitted one would run until the
+ * operator aborts the turn. The number lives in `src/then-run.ts`, where the command is spawned;
+ * this is the schema's view of the same ceiling. 300s is this repo's own bash ceiling.
+ */
+export const DEFAULT_THEN_RUN_TIMEOUT_SECONDS = THEN_RUN_CEILING_SECONDS;
+
 /** A follow-up command: run only after the mutation commits, in the same observation. */
 const thenRunSchema = Type.Object(
   {
     command: Type.String({ description: "Bash command to run after the mutation succeeds" }),
     timeout: Type.Optional(
-      Type.Number({ description: "Timeout in seconds (optional, no default timeout)" }),
+      Type.Number({ description: "Timeout in seconds; absent or non-positive means 300" }),
     ),
   },
   { additionalProperties: false, description: "Command to run after the mutation succeeds" },
@@ -210,9 +222,10 @@ const EDIT_PAYLOAD_HINT =
   '"file" may name another served file, where both modes apply too); optional "at" is "in-place" (default), ' +
   '"before" or "after" (single-line resolved target only); optional "mode" is "general" (default, reproduced ' +
   'served rows are refused) or "literal" (declared literal content); optional "then_run" ({ command, timeout? }) ' +
-  'runs a command only after the mutation commits, reported as "[then_run:succeeded|failed|skipped]" in one observation.';
+  'runs a command only after the mutation commits, reported as "[then_run:succeeded|failed|skipped]" in one ' +
+  'observation; a run longer than 10s reports "[then_run:backgrounded] job <id>" and keeps running.';
 export const EDIT_DESCRIPTION = `Edit a range of lines in a text file via \`edit\`: \`{ "file": file, "edits": [{ "anchor_from": a, "anchor_to": b, "text": text }, ...] }\` (one file per call). Use rows this session served for the file: \`read\`, a diff, or a bash view. \`anchor_from\`/\`anchor_to\` are bare ${HASH_LEN}-char HASH anchors. Copy the ${HASH_LEN} chars before \`│\` in this file's served rows (lease (session, file, anchor)). One payload per item: \`text\` (\`\\n\` joins lines, \`""\` deletes) or \`text_ref\` \`{anchor_from, anchor_to, mode (required), file?}\`, the bytes of a served span (\`mode\` \`"copy"\` keeps it, \`"cut"\` removes it). \`file\` names another served file. \`at\`: "in-place" (default), "before", "after". A null optional field reads as absent. \`[MODEL] [E_*]\` is your retry instruction. \`[W_*]\` is informational.`;
-export const EDIT_SNIPPET = `Edit a file range via \`edit\`: \`{"file":file,"edits":[{"anchor_from":a,"anchor_to":b,"text":text}]}\` — anchors are bare ${HASH_LEN}-char hashes copied from served \`HASH│content\` from rows this file served this session. One payload per item: \`text\` is bare content (\`""\` deletes) or \`text_ref\` writes a served span (\`"copy"\` keeps source, \`"cut"\` removes it from this file or \`file\`). \`at\`: "in-place" (default), "before", "after". \`then_run:{command,timeout?}\` runs the command after the mutation succeeds. Chain from diff anchors.`;
+export const EDIT_SNIPPET = `Edit a file range via \`edit\`: \`{"file":file,"edits":[{"anchor_from":a,"anchor_to":b,"text":text}]}\` — anchors are bare ${HASH_LEN}-char hashes copied from served \`HASH│content\` from rows this file served this session. One payload per item: \`text\` is bare content (\`""\` deletes) or \`text_ref\` writes a served span (\`"copy"\` keeps source, \`"cut"\` removes it from this file or \`file\`). \`at\`: "in-place" (default), "before", "after". \`then_run:{command,timeout?}\` runs the command after the mutation succeeds; a longer run reports a job id. Chain from diff anchors.`;
 export const EDIT_GUIDELINES: string[] = [
   `edit: an \`anchor\` is the bare ${HASH_LEN}-char hash (for example "wUpX"). A \`HASH│content\` line (for example \`wUpX│    pass\`) is a served row, and \`│\` separates the two. Copy only the ${HASH_LEN} chars before \`│\` into \`anchor_from\`/\`anchor_to\`.`,
   "edit: give each item two anchors and exactly one payload. `file` is the text file. One item is one edit. Several items batch to that one file. Choose one payload field: `text` or `text_ref`. `at` is optional. A null in an optional field (`text`, `text_ref`, `at`, the top-level `mode`, `text_ref.file`) reads as absent. A null in a required field (`file`, `edits`, any anchor, `text_ref.mode`) is refused.",
@@ -224,7 +237,7 @@ export const EDIT_GUIDELINES: string[] = [
   "edit: after success the diff serves fresh `HASH│content` rows: context rows and `+` rows. Copy new anchors from the diff for your next call. Verify that the diff matches your intended mutation.",
   "edit: a `[MODEL] [W_*]` line in `content` is informational. The mutation was applied. A `[MODEL] [E_*]` line is your retry instruction or a rejection: follow it from the message alone. A `[MODEL]` line that presents `Current range (fresh read):` shows the current rows. Decide from them. A dimmed `[USER]` line in `details` is human info.",
   "edit: batch independent ranges in one `edits` array. Inside it, every edit validates BEFORE the first rename, and any failure there writes nothing. A foreign `cut` writes its files in a fixed order, and a defeated rollback restores captured bytes or is repaired on the next run.",
-  "edit: `then_run` `{command, timeout?}` runs the command only after the mutation commits, in the same observation. A refused mutation reports `[then_run:skipped]` and runs nothing. A failed command reports `[then_run:failed]` and the mutation stays applied.",
+  "edit: `then_run` `{command, timeout?}` runs the command only after the mutation commits, in the same observation. A refused mutation reports `[then_run:skipped]` and runs nothing. A failed command reports `[then_run:failed]` and the mutation stays applied. A command that outlives the 10-second foreground window reports `[then_run:backgrounded] job <id>` and keeps running; read it with `then_run_job`.",
 ];
 
 /**
@@ -511,11 +524,13 @@ function analyzeRequest(input: unknown): Admission {
         message: `Edit request "then_run" must be { command: non-empty string, timeout?: number } (absent means no command). ${EDIT_PAYLOAD_HINT}`,
       };
     }
-    // WHY: a spelled `null` timeout reads as absent, like every other optional slot (ticket-75).
-    thenRun =
-      typeof requested.timeout === "number"
-        ? { command: requested.command, timeout: requested.timeout }
-        : { command: requested.command };
+    // WHY: a spelled `null` timeout reads as absent, like every other optional slot (ticket-75), and
+    // WHY: an unusable one (0, negative, NaN) would reach pi's own guard only AFTER the mutation has
+    // WHY: landed, reporting a failed command for a run that never started — so both fold to the ceiling.
+    thenRun = {
+      command: requested.command,
+      timeout: normalizeThenRunTimeout(requested.timeout as number | undefined),
+    };
   }
   if (!("file" in rec)) {
     return {

@@ -13,6 +13,8 @@ export type RRState = {
   preview?: RPreview;
   previewGeneration?: number;
   previewTimer?: ReturnType<typeof setTimeout>;
+  /** The fused follow-up command, captured from the call args so the row can name it while it runs. */
+  thenRunCommand?: string;
 };
 
 export function getPreviewInput(args: unknown): { file: string; edits: EditItem[] } | null {
@@ -59,6 +61,9 @@ export function fmtCall(
       : theme.fg("toolOutput", "...");
   const arity = args && args.edits.length > 1 ? ` (${args.edits.length} edits)` : "";
   let text = `${theme.fg("toolTitle", theme.bold("edit"))} ${pathDisplay}${arity}`;
+  if (state.thenRunCommand) {
+    text += theme.fg("muted", ` → then_run: ${state.thenRunCommand}`);
+  }
 
   if (!state.preview) {
     return text;
@@ -75,10 +80,24 @@ export function fmtCall(
   return text;
 }
 
-export function getResultText(result: {
-  content?: Array<{ type: string; text?: string }>;
-}): string | undefined {
-  const textContent = result.content?.find(
+/** Cap a command's output the way the diff preview is capped, so a noisy run cannot fill the row. */
+export function fmtCommandOutput(text: string, theme: FgT, maxLines = 6): string {
+  const lines = trimEmpty(text.split("\n"));
+  if (lines.length === 0) {
+    return "";
+  }
+  const shown = lines.slice(0, maxLines).map((line) => theme.fg("dim", line));
+  if (lines.length > maxLines) {
+    shown.push(theme.fg("muted", `... ${lines.length - maxLines} more output lines`));
+  }
+  return shown.join("\n");
+}
+
+export function getResultText(
+  result: { content?: Array<{ type: string; text?: string }> } | undefined,
+): string | undefined {
+  // WHY: pi emits an update with no result before the tool produces one, and a partial render must not throw.
+  const textContent = result?.content?.find(
     (entry): entry is { type: "text"; text: string } =>
       entry.type === "text" && typeof entry.text === "string",
   );
@@ -106,6 +125,10 @@ export function buildAppliedText(details: EditDetails | undefined, theme: FgT): 
   const driftNotice = details?.driftNotice;
   if (driftNotice) {
     sections.push(theme.fg("dim", driftNotice));
+  }
+  const thenRunTail = details?.thenRunTail;
+  if (thenRunTail) {
+    sections.push(fmtCommandOutput(thenRunTail, theme));
   }
   return sections.length > 0 ? sections.join("\n\n") : undefined;
 }

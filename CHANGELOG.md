@@ -15,6 +15,8 @@
 * **edit:** a same-file refusal raised inside a batch after an earlier item of the call had already changed the temporary buffer (`[E_STALE_RANGE]`, `[E_UNVERIFIED_RANGE]`, `[E_STALE_ANCHOR]`) serves no rows: those rows come from a buffer the call never committed as the current on-disk state, so none are shown, recorded as served, or granted leases. The prior served record is preserved and the headline names the current-file lines an anchored read would serve. Reject-and-serve against the on-disk baseline is unchanged.
 
 * **read:** flatten the payload schema to one object. A top-level `anyOf` has no top-level `properties`, so a template that renders tools verbatim hands models a shape they cannot map to arguments: on a local llama.cpp/Qwen endpoint every `read` call arrived as `arguments: {}`. `file` stays required, `mode` is an optional `served | verbatim | outline`, and the 16-window cap moves from the schema to admission, which knows the mode and lifts it for outline.
+
+* **edit:** `then_run` stops running invisibly and stops running forever. An absent or unusable `timeout` reached pi's bash as `undefined`, which arms no timer, and no update callback was passed, so nothing streamed. It now folds to 300s, the running command streams as `then_run <command>` with a capped tail, and a run longer than 10s is handed to a job store reporting `[then_run:backgrounded] job <id>`, readable with the new `then_run_job`. (#283)
 ## [2.18.0] - 2026-11-07
 
 ### Features
